@@ -163,7 +163,7 @@ with dai.Device(pipeline) as device:
         in_depthFrame = depthQueue.get()
         depthFrame = in_depthFrame.getFrame()
         print("depth frame")
-        print(in_depthFrame.getTimestamp())
+        print(in_depthFrame.getTimestamp().total_seconds())
         print(in_depthFrame.getSequenceNum())
 
 
