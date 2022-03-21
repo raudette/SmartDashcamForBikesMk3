@@ -10,11 +10,14 @@ from util.functions import non_max_suppression
 import argparse
 import time
 import numpy as np
-from calc import HostSpatialsCalc
+from util.calc import HostSpatialsCalc
 import math
+from paddleocr import PaddleOCR,draw_ocr
+import logging
 
 #settings
-fps=5
+fps=10
+
 
 labelMap = [
     "License_Plate"
@@ -31,6 +34,18 @@ conf_thresh = args.confidence_thresh
 iou_thresh = args.iou_thresh
 
 nn_shape = 416
+
+ocr = PaddleOCR(use_angle_cls=True, lang='en') 
+#silence paddleocr
+'''
+for k,v in  logging.Logger.manager.loggerDict.items()  :
+        print('+ [%s] {%s} ' % (str.ljust( k, 20)  , str(v.__class__)[8:-2]) ) 
+        if not isinstance(v, logging.PlaceHolder):
+            for h in v.handlers:
+                print('     +++',str(h.__class__)[8:-2] )
+'''
+logger = logging.getLogger('root')
+logger.setLevel(logging.WARN)
 
 def draw_boxes(frame, boxes, total_classes):
     if boxes.ndim == 0:
@@ -54,6 +69,41 @@ def draw_boxes(frame, boxes, total_classes):
 
             # Get the width and height of label for bg square
             (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+
+            # Shows the text.
+            frame = cv2.rectangle(frame, (x1, y1 - 2*h), (x1 + w, y1), color, -1)
+            frame = cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+    return frame
+
+def drawandocr_boxes(frame, boxes, total_classes):
+    if boxes.ndim == 0:
+        return frame
+    else:
+
+        # define class colors
+        colors = boxes[:, 5] * (255 / total_classes)
+        colors = colors.astype(np.uint8)
+        colors = cv2.applyColorMap(colors, cv2.COLORMAP_HSV)
+        colors = np.array(colors)
+
+        for i in range(boxes.shape[0]):
+            x1, y1, x2, y2 = int(boxes[i,0]), int(boxes[i,1]), int(boxes[i,2]), int(boxes[i,3])
+            conf, cls = boxes[i, 4], int(boxes[i, 5])
+
+            label = f"{labelMap[cls]}: {conf:.2f}" if "default" in nn_path else f"Class {cls}: {conf:.2f}"
+            color = colors[i, 0, :].tolist()
+
+            frame = cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+
+            # Get the width and height of label for bg square
+            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+            result = ocr.ocr(frame[y1:y2, x1:x2], cls=True)
+            for line in result:
+                print("paddle",line[1][0])
+#                print("paddle",line)
+                paddleresult = "paddle " +line[1][0]
+                frame = cv2.putText(frame, paddleresult,(x1, y1+20) , cv2.FONT_HERSHEY_SIMPLEX, .8, (0, 255, 0))
+
 
             # Shows the text.
             frame = cv2.rectangle(frame, (x1, y1 - 2*h), (x1 + w, y1), color, -1)
@@ -123,7 +173,7 @@ with dai.Device(pipeline) as device:
 
     start_time = time.time()
     counter = 0
-    fps = 0
+    fps = 1
     layer_info_printed = False
     while True:
         in_nn_input = q_nn_input.get()
@@ -156,15 +206,17 @@ with dai.Device(pipeline) as device:
         boxes = np.array(boxes[0])
 
         if boxes is not None:
-            frame = draw_boxes(frame, boxes, total_classes)
-        cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
+            frame = drawandocr_boxes(frame, boxes, total_classes)
+        
+        
+        #cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
         cv2.imshow("nn_input", frame)
 
         in_depthFrame = depthQueue.get()
         depthFrame = in_depthFrame.getFrame()
-        print("depth frame")
-        print(in_depthFrame.getTimestamp().total_seconds())
-        print(in_depthFrame.getSequenceNum())
+#        print("depth frame")
+#        print(in_depthFrame.getTimestamp().total_seconds())
+#        print(in_depthFrame.getSequenceNum())
 
 
         # Calculate spatial coordiantes from depth frame
