@@ -4,6 +4,7 @@
 # Running the depth perception based on this code from Luxonis
 # https://github.com/luxonis/depthai-experiments/tree/master/gen2-calc-spatials-on-host
 
+from pickle import FALSE
 import cv2
 import depthai as dai
 from util.functions import non_max_suppression
@@ -16,7 +17,7 @@ from paddleocr import PaddleOCR,draw_ocr
 import logging
 
 #settings
-fps=10
+fps=2
 
 
 labelMap = [
@@ -26,6 +27,8 @@ labelMap = [
 parser = argparse.ArgumentParser()
 parser.add_argument("-conf", "--confidence_thresh", help="set the confidence threshold", default=0.3, type=float)
 parser.add_argument("-iou", "--iou_thresh", help="set the NMS IoU threshold", default=0.4, type=float)
+parser.add_argument("-db", "--database", help="Store metadata in DB", action='store_true')
+parser.add_argument("-d", "--desktop", help="Turn on things you want running while testing on desktop", action='store_true')
 
 args = parser.parse_args()
 
@@ -173,13 +176,16 @@ with dai.Device(pipeline) as device:
 
     start_time = time.time()
     counter = 0
-    fps = 1
+#    fps = 1
     layer_info_printed = False
     while True:
         in_nn_input = q_nn_input.get()
         in_nn = q_nn.get()
 
         frame = in_nn_input.getCvFrame()
+
+#        print("plate ", in_nn_input.getTimestamp())
+
 
         layers = in_nn.getAllLayers()
 
@@ -210,13 +216,14 @@ with dai.Device(pipeline) as device:
         
         
         #cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
-        cv2.imshow("nn_input", frame)
+        if args.desktop:
+            cv2.imshow("nn_input", frame)
 
         in_depthFrame = depthQueue.get()
         depthFrame = in_depthFrame.getFrame()
 #        print("depth frame")
 #        print(in_depthFrame.getTimestamp().total_seconds())
-#        print(in_depthFrame.getSequenceNum())
+#        print("depth ", in_depthFrame.getTimestamp())
 
 
         # Calculate spatial coordiantes from depth frame
@@ -233,7 +240,8 @@ with dai.Device(pipeline) as device:
         #text.putText(disp, "Z: " + ("{:.1f}m".format(spatials['z']/1000) if not math.isnan(spatials['z']) else "--"), (x + 10, y + 50))
 
         # Show the frame
-        cv2.imshow("depth", disp)
+        if args.desktop:
+            cv2.imshow("depth", disp)
 
         counter += 1
         if (time.time() - start_time) > 1:

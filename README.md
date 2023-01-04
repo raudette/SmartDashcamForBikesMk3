@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Requires a [Luxonis Oak Camera](https://store.opencv.ai/), which a camera with a USB interface and an on-board vision processing unit.  It will likely work with an Intel Neural Compute stick
+- Requires a [Luxonis Oak Camera](https://store.opencv.ai/), which is a camera with a USB interface and an on-board vision processing unit.  It will likely work with an Intel Neural Compute stick.
 
 ## Installation
 
