@@ -12,6 +12,7 @@ import depthai as dai
 import sqlite3
 from datetime import datetime
 import time
+import os
 
 #defaults/constants
 manualfocus=100 #0 to 255
@@ -59,7 +60,6 @@ def callback(packet: DetectionPacket, visualizer: Visualizer):
         if args['desktop']:
             imgPreview = packet.frame
             cv2.rectangle(imgPreview, (int(topLeft.x),int(topLeft.y)),(int(bottomRight.x),int(bottomRight.y)),(0,255,0),2)
-
         result = ocr.ocr(imgPlate, cls=True)
         for index, line in enumerate(result):
             if line[1][1]>=args['ocr_confidence']:
@@ -76,7 +76,7 @@ def callback(packet: DetectionPacket, visualizer: Visualizer):
             cv2.imshow("Augmented Output", imgPreview)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-conf", "--config", help="Trained YOLO json config path", default='model/best.json', type=str)
+parser.add_argument("-conf", "--config", help="Trained YOLO json config path", default='model/SDCMk3-LicensePlateModel.json', type=str)
 parser.add_argument("-iou", "--iou_thresh", help="set the NMS IoU threshold", default=0.4, type=float)
 parser.add_argument("-ocr", "--ocr_confidence", help="set the NMS IoU threshold", default=0.9, type=float)
 parser.add_argument("-norec", "--norecording", help="Disable video", action='store_true')
@@ -94,10 +94,24 @@ cursor.execute("INSERT INTO session (description) VALUES ('"+startTime+"')")
 sessionId=cursor.lastrowid
 dbconnection.commit()
 
+# All this to guess the folder that the video is going to go in
 mxid=""
 for device in dai.Device.getAllAvailableDevices():
     mxid=device.getMxId()
-    print(mxid)
+
+folders = os.listdir(recordingfolder)
+recordingId=0
+for folder in folders:
+    index = folder.index("-") if "-" in folder else -1 
+    if index >= 1:
+        tempId = folder[0:folder.index("-")]
+        if tempId.isnumeric:
+            if int(tempId) > recordingId:
+                recordingId=int(tempId)
+recordingId = recordingId +1
+sVideoName = str(recordingId)+"-"+mxid+"/color.mp4"
+print(sVideoName)
+
 
 with OakCamera(args=args) as oak:
     color = oak.create_camera('color',fps=2,encode='H265')
@@ -107,5 +121,7 @@ with OakCamera(args=args) as oak:
     color.node.initialControl.setAutoFocusMode(dai.RawCameraControl.AutoFocusMode.OFF)
     if not args['norecording']:
         oak.record([color.out.encoded], recordingfolder, RecordType.VIDEO)
+        cursor.execute("UPDATE session set videofile='"+sVideoName+"' where sessionid = "+str(sessionId)) 
+        dbconnection.commit()
     oak.visualize(nn, callback=callback)
     oak.start(blocking=True)
