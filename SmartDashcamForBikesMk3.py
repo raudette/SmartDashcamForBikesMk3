@@ -13,10 +13,15 @@ import sqlite3
 from datetime import datetime
 import time
 import os
+import gpsd
+import threading
 
 #defaults/constants
 manualfocus=100 #0 to 255
 recordingfolder="./data/"
+loggpspositionintervalsec=10
+
+DBlock = threading.Lock()
 
 ocr = PaddleOCR(use_angle_cls=True, lang='en') 
 #silence paddleocr
@@ -34,12 +39,52 @@ def decode(nn_data: NNData):
 
     return dets
 
+def loggpsposition():
+    threading.Timer(loggpspositionintervalsec, loggpsposition).start()
+    now = datetime.now()
+    pctime=now.strftime("%Y-%m-%d %H:%M:%f")
+    runsql(buildroutelogsql(pctime))
+
+#have several threads updating DB - ensure only one is using the DB connection
+def runsql(sql):
+    try:
+        DBlock.acquire(True)
+        cursor.execute(sql)
+        lastrowid=cursor.lastrowid
+        dbconnection.commit()
+    finally:
+        DBlock.release()
+    return lastrowid
+
+
+#we have 2 places we want to log GPS coordinates, so I break out the required SQL
+def buildroutelogsql(pctime):
+    velocity=0 #for ANT+ sensor eventually
+    mode=0 #no gps or gps not locked
+
+    if args['gps']:
+        try:
+            gpspacket = gpsd.get_current()
+            mode = gpspacket.mode 
+            print(gpspacket.speed())
+        except: #if no GPS device connected
+            pass
+    if mode == 2: #2d fix
+        routelogquery="INSERT INTO routelog (sessionid,timestamp, latitude, longitude, velocity, gpstimestamp, gpsvelocity, latitude_err, longitude_err, gpsvelocity_err) VALUES ('"+str(sessionId)+"','"+pctime+"','"+str(gpspacket.lat)+"','"+str(gpspacket.lon)+"','"+str(velocity)+"','"+gpspacket.get_time().strftime("%Y-%m-%d %H:%M:%f")+"','"+str(gpspacket.speed())+"','"+str(gpspacket.error['y'])+"','"+str(gpspacket.error['x'])+"','"+str(gpspacket.error['s'])+"')"
+    elif mode > 2: #3d fix
+        routelogquery="INSERT INTO routelog (sessionid,timestamp, latitude, longitude, velocity, gpstimestamp, gpsvelocity, latitude_err, longitude_err, gpsvelocity_err, altitude, altitude_err) VALUES ('"+str(sessionId)+"','"+pctime+"','"+str(gpspacket.lat)+"','"+str(gpspacket.lon)+"','"+str(velocity)+"','"+gpspacket.get_time().strftime("%Y-%m-%d %H:%M:%f")+"','"+str(gpspacket.speed())+"','"+str(gpspacket.error['y'])+"','"+str(gpspacket.error['x'])+"','"+str(gpspacket.error['s'])+"','"+str(gpspacket.lat)+"','"+str(gpspacket.error['v'])+"')"
+    else: #no gps or no fix
+        routelogquery = "INSERT INTO routelog (sessionid,timestamp,velocity) VALUES ('"+str(sessionId)+"','"+pctime+"','"+str(velocity)+"')"
+    print(mode)
+    return routelogquery
+
 def callback(packet: DetectionPacket, visualizer: Visualizer):
     detections: Detections = packet.img_detections
 
     now = datetime.now()
     detecttime=now.strftime("%Y-%m-%d %H:%M:%f")
-
+    routelogid = runsql(buildroutelogsql(detecttime))
+    devicetimestamp=detections.getTimestampDevice()
     num = len(packet.img_detections.detections)
     if args['desktop']:
         imgPreview = packet.frame
@@ -47,10 +92,6 @@ def callback(packet: DetectionPacket, visualizer: Visualizer):
             cv2.imshow("Augmented Output", imgPreview)
 
     for detectedobject in packet.img_detections.detections:
-        cursor.execute("INSERT INTO routelog (sessionid,timestamp) VALUES ('"+str(sessionId)+"','"+detecttime+"')")
-        dbconnection.commit()
-        routelogid=cursor.lastrowid
-        print("x ", str(detectedobject.spatialCoordinates.x) + ",y " + str(detectedobject.spatialCoordinates.y) + ",z " + str(detectedobject.spatialCoordinates.z) )
         roiData = detectedobject.boundingBoxMapping
         roi = roiData.roi
         roi = roi.denormalize(packet.frame.shape[1],packet.frame.shape[0])
@@ -68,8 +109,7 @@ def callback(packet: DetectionPacket, visualizer: Visualizer):
                 fConfidence=str(line[1][1])
                 sPaddleResult="paddle " + str(line[1][0]) + " confidence " + str(fConfidence)
                 print(sPaddleResult)
-                cursor.execute("INSERT INTO feature (routelogid,featureplatenumber, featuretypeid, feature_x, feature_y, feature_z,timestamp) VALUES ('"+str(routelogid)+"','"+sPlate+"',1,"+str(detectedobject.spatialCoordinates.x)+","+str(detectedobject.spatialCoordinates.y)+","+str(detectedobject.spatialCoordinates.z)+",'"+detecttime+"')")
-                dbconnection.commit()
+                runsql("INSERT INTO feature (routelogid,featureplatenumber, featuretypeid, feature_x, feature_y, feature_z,timestamp,devicetimestamp) VALUES ('"+str(routelogid)+"','"+sPlate+"',1,"+str(detectedobject.spatialCoordinates.x)+","+str(detectedobject.spatialCoordinates.y)+","+str(detectedobject.spatialCoordinates.z)+",'"+detecttime+"','"+str(devicetimestamp)+"')")
                 if args['desktop']:
                     cv2.putText(imgPreview,sPaddleResult,(int(topLeft.x),int(topLeft.y)+20) , cv2.FONT_HERSHEY_SIMPLEX, .8, (0, 255, 0))
         if args['desktop']:
@@ -81,18 +121,23 @@ parser.add_argument("-iou", "--iou_thresh", help="set the NMS IoU threshold", de
 parser.add_argument("-ocr", "--ocr_confidence", help="set the NMS IoU threshold", default=0.9, type=float)
 parser.add_argument("-norec", "--norecording", help="Disable video", action='store_true')
 parser.add_argument("-dt", "--desktop", help="Turn on things you want running while testing on desktop", action='store_true')
+parser.add_argument("-gps", "--gps", help="Enable GPS", action='store_true')
 
 args = ArgsParser.parseArgs(parser)
 
 now = datetime.now()
 
-dbconnection = sqlite3.connect("SmartDashcamForBikesMk3.sqlite3")
+dbconnection = sqlite3.connect("SmartDashcamForBikesMk3.sqlite3", check_same_thread=False)
 cursor = dbconnection.cursor()
 
 startTime = now.strftime("%Y%m%d-%H%M%S")
 cursor.execute("INSERT INTO session (description) VALUES ('"+startTime+"')")
 sessionId=cursor.lastrowid
 dbconnection.commit()
+
+if args['gps']:
+    gpsd.connect()
+    loggpsposition() #starts a thread to log position at regular intervals
 
 # All this to guess the folder that the video is going to go in
 mxid=""
@@ -111,7 +156,6 @@ for folder in folders:
 recordingId = recordingId +1
 sVideoName = str(recordingId)+"-"+mxid+"/color.mp4"
 print(sVideoName)
-
 
 with OakCamera(args=args) as oak:
     color = oak.create_camera('color',fps=2,encode='H265')
